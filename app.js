@@ -1,3 +1,5 @@
+//======================================Setup======================================//
+
 require("dotenv").config(); //needed as early as possible to hide environment vars
 const express = require("express");
 const ejs = require("ejs");
@@ -7,6 +9,10 @@ const mongoose = require("mongoose");
 const session = require("express-session");
 const passport = require("passport");
 const passportLocalMongoose = require("passport-local-mongoose");
+//Require the facebook strategy
+const FacebookStrategy = require("passport-facebook").Strategy;
+//Use npm package findorcreate, which doesn't exist from the get go
+const findOrCreate = require('mongoose-findorcreate');
 
 const app = express();
 
@@ -36,25 +42,66 @@ console.log(process.env.SECRET);
 
 const userSchema = new mongoose.Schema({
   //We need a mongoose Schema to apply encryption through mongoose-encryption, not just a simple js object
-  email: String,
-  password: String,
+  email: String, //We don't get this anymore, since they logged in through FB
+  password: String, //neither this, we don't have user's passwords, it's on Facebook
+  facebookId: String //This we do get. Save the facebookId given by facebook into our userDB
 });
 
 userSchema.plugin(passportLocalMongoose); //hashes and salts, saves users into mongodb. Needs to be in this order.
+userSchema.plugin(findOrCreate); //use findOrCreate needed for Passport.js' setup
 
 const User = new mongoose.model("User", userSchema);
+
+//--------------------------------------//
 
 //must be below our model
 passport.use(User.createStrategy()); //handles user authentication
 
-passport.serializeUser(User.serializeUser()); //creates cookies when session is opened
-passport.deserializeUser(User.deserializeUser()); //destroys cookies session closed
+//Serialize and deserialize users for any strategy, not just locally as before:
+passport.serializeUser(function(user, cb) {
+  process.nextTick(function() {
+    cb(null, { id: user.id, username: user.username });
+  });
+});
 
-//--------------------------------------//
+passport.deserializeUser(function(user, cb) {
+  process.nextTick(function() {
+    return cb(null, user);
+  });
+});
 
+//After letting passport handle sessions and cookies, set up Oauth
+
+passport.use(new FacebookStrategy({//JSON object with data about "who" our app is
+  clientID: process.env.FACEBOOK_APP_ID, //given once we set up Meta developer account
+  clientSecret: process.env.FACEBOOK_APP_SECRET,
+  callbackURL: "http://localhost:3000/auth/facebook/callback" //we gave them this
+},
+function(accessToken, refreshToken, profile, cb) {//Callback function that gives us the acess token, and their Facebook profile basi data
+  console.log(profile);
+  User.findOrCreate({ facebookId: profile.id }, function (err, user) {//required findorcreate, if a user has that facebookId, don't create a new user, just log him in
+    return cb(err, user);
+  });
+}
+));
+
+//=====================================================================================//
+//=========================================Routes=====================================//
 app.get("/", function (req, res) {
   res.render("home");
 });
+
+//----------Passport facebook authentication strategy---------//
+app.get('/auth/facebook',
+  passport.authenticate('facebook')); //use passport to authenticate user through facebook strategy
+
+app.get('/auth/facebook/callback',
+  passport.authenticate('facebook', { failureRedirect: '/login' }),
+  function(req, res) {
+    // Successful authentication, redirect home.
+    res.redirect('/secrets');
+  });
+//------------------------------------------------------------//
 
 app.get("/login", function (req, res) {
   res.render("login");
@@ -115,7 +162,7 @@ app.post("/login", function (req, res) {
     }
   })
 });
-
+//=====================================================================================//
 //--------------------------------------//
 
 app.listen(3000, function () {
